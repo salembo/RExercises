@@ -1,0 +1,572 @@
+---
+title: "Detecting fake job posts-final project"
+author:
+- Ana Maria Ruiz Ruiz
+- ruizruiz.a@northeastern.edu
+subtitle: DA5030 Intro to Machine Learning & Data Mining
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+subparagraph: yes
+fontsize: 12pt
+urlcolor: blue
+geometry: margin=0.7in
+---
+```{r}
+#In this section we load all the libraries that we are going to use in the project
+install.packages(c("tidyverse","caret","randomForest","fastDummies","splitstackshape","countrycode","stringr","factoextra","FactoMineR","ROCR"),repos='http://cran.us.r-project.org')
+library(tidyverse)
+library(caret)
+library(e1071)
+library(randomForest)
+library(class)
+library(fastDummies)
+library(splitstackshape)
+library(countrycode)
+library(stringr)
+library(factoextra)
+library(FactoMineR)
+library(ROCR)
+```
+## Business Understanding  
+Nowadays, the hiring process depends mainly on cloud-based systems so job search and applications depend on the job posts distributed to many different recruiting websites reducing the candidate contact with the company. This new dynamic in the hiring process also opened a door for fake job posts and scams which represent a high risk for job seekers and could harm a company's reputation. In this project we are going to use the skills acquired in the class of DA 5030 Intro to Data mining and machine learning, to try to identify possible scams or fake job posts.   
+To complete this project we depend on the information collected by Workable between 2012 and 2014, the job positions were published from different places around the world but were first registered as Workable users. 
+The technical goal of this project is to use different machine learning models to classify job posts and identify fake job posts.  
+First, the steps to complete this project are to collect the information and explore it using visualization functions. Then, prepare the dataset and perform the transformations required for the models selected. Split the dataset for training and testing to later implement naïve Bayes, random forest, and kNN for the classification task. As the last step is to evaluate the performance and report the conclusions.
+
+## Data Understanding  
+* Collect initial data: The data is on a [Kaggle](https://www.kaggle.com/shivamb/real-or-fake-fake-jobposting-prediction) repository but it was originally posted by the University of the Aegean as the [Employment Scam Aegean Dataset](http://emscad.samos.aegean.gr/), for this project we are using only the version posted on Kaggle. 
+* Describe data:
+The dataset contains 17880 observations and 18 variables including the outcome, the  missing values are as blank spaces so we need to identify them while reading the dataset. The job_id feature is an id of the job post so it doesn't add value to the classification task and the decision is to exclude it from the dataset.  
+```{r read_in}
+#Code to read from Google Drive took from: #https://stackoverflow.com/questions/6299220/access-a-url-and-read-data-with-r
+job_posts<-read.csv(url("https://drive.google.com/u/0/uc?id=1RplR0bxVf_H02NkGxYYRaVb57MoqvYgo&export=download"),na.strings  = "")
+str(job_posts)
+job_posts$job_id<-NULL
+```
+* Explore data:  
+From the previous quick exploration we can identify that company profile, description, requirements and benefits are texts and for the purpose of this project we are not using NLP so those variables are out of the dataframe. Also, even some variables are detected as integers  those are actually factors since those are 0's and 1's  like in has_questions.  
+```{r}
+levelsCat<- sapply(job_posts, function(x) length(unique(x)))
+barplot(levelsCat,
+        main = "Quantity of levels per variable",
+        xlab = "Quantity of levels",
+        space = 0.5,
+        cex.names=.7,
+        horiz = TRUE,
+        las=2,
+        col = c(rgb(0.3,0.1,0.4,0.6) , 
+                rgb(0.3,0.5,0.4,0.6) , 
+                rgb(0.3,0.9,0.4,0.6) ,  
+                rgb(0.3,0.9,0.4,0.6)))
+```
+We can visualize also the quantity of missing values for each variable  
+```{r}
+missingVal<- sapply(job_posts, function(x) sum(is.na(x))/length(x)*100)
+barplot(missingVal,
+        main = "Percentage of missing values per variable",
+        ylab = "Percentage of missing values",
+        space = 0.5,
+        cex.names=.7,
+        las=2,
+        col = c(rgb(0.6,0.1,0.4,0.3) , 
+                rgb(0.3,0.5,0.4,0.2) , 
+                rgb(0.4,0.4,0.4,0.4) ,  
+                rgb(0.3,0.7,0.4,0.8)))
+```
+As most of th missing data is not on the text we can visualize again the quantity of levels per variable excluding text as it is going to help us to decide what options we have for missing values.  
+
+```{r}
+job_posts_notext<-job_posts
+job_posts_notext[ ,c('company_profile','description','requirements','benefits')] <-
+  list(NULL)
+levelsCatN<- sapply(job_posts_notext, function(x) length(unique(x)))
+barplot(levelsCatN,
+        main = "Quantity of levels per variable",
+        ylab = "Quantity of levels",
+        space = 0.5,
+        cex.names=.7,
+        las=2,
+        col = c(rgb(0.3,0.1,0.4,0.6) , 
+                rgb(0.3,0.5,0.4,0.6) , 
+                rgb(0.3,0.9,0.4,0.6) ,  
+                rgb(0.3,0.9,0.4,0.6)))
+
+summary(job_posts_notext)
+#Find all missing values-total rows:17880
+sapply(job_posts_notext, function(x) sum(is.na(x))/length(x)*100)
+```
+As the levels for title, location, department and salary_range are around the hundreds, the next visualization explore the distribution of fraudulent cases per industry level. Some industry levels have actually more fraud cases than others.   
+```{r}
+fraudInd <- table(job_posts_notext$fraudulent, job_posts_notext$industry,useNA = "ifany")
+barplot(fraudInd,
+        las=2,
+        space = 0.4,
+        horiz = TRUE,
+        cex.names=.7,
+        col = c(rgb(0.2,0.1,0.2,0.3) , 
+                rgb(0.5,0.7,0.8,0.9) ))
+```
+The following visualization describes the distribution of required education per type of job post.  
+```{r}
+fraudEd <- table(job_posts_notext$fraudulent, job_posts_notext$required_education,
+                 useNA = "ifany")
+barplot(fraudEd,
+        las=2,
+        space = 0.3,
+        cex.names=.6,
+        col = c(rgb(0.6,0.3,0.2,0.3) , 
+                rgb(0.2,0.7,0.8,0.9) ))
+```
+The following visualization is easier to understand as the variable required_experience has less levels, also it's more clear that after missing values, Entry level job posts have the highest amount of fraudulent posts.  
+```{r}
+fraudEx <- table(job_posts_notext$fraudulent, job_posts_notext$required_experience,
+                 useNA = "ifany")
+barplot(fraudEx,
+        las=2,
+        space = 0.3,
+        cex.names=.8,
+        col = c(rgb(0.6,0.3,0.2,0.3) , 
+                rgb(0.2,0.7,0.8,0.9) ))
+```
+Following the previous pattern, in this visualization we also show the distribution of fraudulent/legit observations per employment type. Full-time and missing values are the levels that have the largest quantity of fraudulent observations.  
+```{r}
+fraudEmpl <- table(job_posts_notext$fraudulent, job_posts_notext$employment_type,
+                   useNA = "ifany")
+barplot(fraudEmpl,
+        main = "Distribution of fraudulent/legit job post per employment type",
+        las=2,
+        space = 0.3,
+        cex.names=.8,
+        col = c(rgb(0.4,0.3,0.7,0.8) , 
+                rgb(0.8,0.2,0.2,0.9) ))
+```
+Again with this distribution is easier to see the distribution of job posts per function level. Engineering,Administrative,Customer services and missing values are the ones that have the biggest amount of fake job posts.  
+```{r}
+fraudFunc <- table(job_posts_notext$fraudulent, job_posts_notext$function.,
+                   useNA = "ifany")
+barplot(fraudFunc,
+        main = "Distribution of fraudulent/legit job post per function",
+        las=2,
+        space = 0.3,
+        horiz = TRUE,
+        cex.names=.8,
+        col = c(rgb(0.4,0.3,0.7,0.8) , 
+                rgb(0.8,0.2,0.2,0.9) ))
+```
+From the previous visualizations and the one below we can see most of the observations are not classified as fraudulent so we don't have a balanced distribution of observations per level of outcome.    
+```{r}
+barplot(table(job_posts_notext$fraudulent),
+        main = "Distribution of fraudulent/legit observations",
+        names.arg = c("legit","fraudulent"),
+        space = 0.3,
+        cex.names=.8,
+        density = 50,
+        col = c(rgb(0.4,0.3,0.7,0.8) , 
+                rgb(0.8,0.2,0.2,0.9) ))
+```
+## Data preparation  
+Doing a recapitulation from the previous stages, job_id is an identifier of the observation so it doesn't add any value for the classification purpose. Also, company_profile,description,requirements,and benefits are full text variables that are not going to be included in this dataframe.  
+Department, salary_range, and required_education are going to be excluded since they have a high amount of missing data, more than the 40% of the values per variable.  
+* Imputation of missing values
+```{r}
+job_posts_NA<-job_posts_notext
+job_posts_NA[ ,c('department','salary_range','required_education')] <- list(NULL)
+head(job_posts_NA)
+```
+Revisiting the calculation of percentage of missing data with the latest features, none of them is over 40%.  
+```{r}
+sapply(job_posts_NA, function(x) sum(is.na(x))/length(x)*100)
+```
+After exploring again the visualizations, the impact of imputation is high specially for the observations classified as fraudulent. So, instead of using the mode to insert the most common required experience or the most common employment type or any other type, I am going to insert a new category level called unknown for all missing values.  
+```{r}
+job_posts_complete<-job_posts_NA
+job_posts_complete[is.na(job_posts_complete)] <- "unknown"
+#verifying the dataframe doesn't have missing values
+sapply(job_posts_complete, function(x) sum(is.na(x))/length(x)*100)
+```
+Also, after summarizing the  quantity of observations per level. We can find some characters that can produce problems  if they become names of features and may difficult the training of the models, so let's clan all of them. Also, another step is to join Other level with unknown to reduce the number of levels.  
+```{r}
+#Summarize quantity of level per required_experience feature. 
+table(job_posts_complete$required_experience)
+job_posts_complete$required_experience<-str_replace_all(
+  job_posts_complete$required_experience,  "-", "")
+job_posts_complete$required_experience<-str_replace_all(
+  job_posts_complete$required_experience,  regex("\\s*"), "")
+#Summarize quantity of level per employment_type feature.
+table(job_posts_complete$employment_type)
+#Joining other and unknown levels. 
+job_posts_complete$employment_type<-str_replace_all(
+  job_posts_complete$employment_type,  "Other", "unknown")
+job_posts_complete$employment_type<-str_replace_all(
+  job_posts_complete$employment_type,  "-", "")
+job_posts_complete$employment_type<-str_replace_all(
+  job_posts_complete$employment_type,  regex("\\s*"), "")
+#Summarize quantity of level per function. feature.
+table(job_posts_complete$function.)
+#Joining other and unknown levels.
+job_posts_complete$function.<-str_replace_all(job_posts_complete$function.,  
+                                              "Other", "unknown")
+job_posts_complete$function.<-str_replace_all(job_posts_complete$function.,  "/", "")
+job_posts_complete$function.<-str_replace_all(job_posts_complete$function.,  
+                                              regex("\\s*"), "")
+```
+The location is a combination of a country code, may have a state code and the city name. It also has more 200 levels, so the idea is to find a better way to use the location as a feature reducing the number of levels. So with some feature engineering, we can group the countries by regions and have a feature with less levels but with important information to make the predictions.  
+```{r}
+head(job_posts_complete)
+job_post_clean<-job_posts_complete
+#cSplit is going to create new columns generated by splitting the location feature.
+job_post_clean<-cSplit(job_post_clean, "location", sep=",")
+#We verify the values in location_01 which are the country codes. 
+table(job_post_clean$location_01)
+#This table summarizes the percentage of missing values, location_01 doesn't
+#have missing values.
+sapply(job_post_clean, function(x) sum(is.na(x))/length(x)*100)
+#Cleaning all the information about location that is not part of the country code. 
+job_post_clean[ ,c('location_02','location_03','location_04','location_05',
+                   'location_06','location_07','location_08','location_09',
+                   'location_10','location_11','location_12','location_13',
+                   'location_14','location_15','location_16')] <- list(NULL)
+```
+Using the countrycode package it is possible to find the region based on the country code. So the next step is going to be create the region feature.  
+* Feature Engineering  
+```{r}
+#source of the steps used to create regions from a country name #https://stackoverflow.com/questions/47510141/get-continent-name-from-country-name-in-r 
+fraudLoc <- table(job_post_clean$fraudulent, job_post_clean$location_01)
+#This plot illustrates the distributions of job post per country 
+barplot(fraudLoc,cex.names=0.6,
+        las=2,
+        space = 0.3,
+        col = c(rgb(0.6,0.3,0.2,0.3) , 
+                rgb(0.2,0.7,0.8,0.9) ))
+#Generating the region feature 
+job_post_clean$region <- countrycode(sourcevar = job_post_clean$location_01,
+                            origin = "iso2c",
+                            destination = "region")
+```
+The following visualization shows the distribution of job posts per region, the highest concentration was on the US in the location_01 feature and as a region it is still on North America.  
+```{r}
+fraudReg <- table(job_post_clean$fraudulent, job_post_clean$region)
+barplot(fraudReg,cex.names=0.6,
+        las=2,
+        space = 0.3,
+        col = c(rgb(0.6,0.3,0.2,0.3) , 
+                rgb(0.2,0.7,0.8,0.9) ))
+#Filling the missing values with the unknown level and cleaning the special characters. 
+job_post_clean[is.na(job_post_clean)] <- "unknown"
+job_post_clean$region<-str_replace_all(job_post_clean$region, "&", "")
+job_post_clean$region<-str_replace_all(job_post_clean$region, "-", "")
+job_post_clean$region<-str_replace_all(job_post_clean$region,  regex("\\s*"), "")
+job_post_clean$location_01<-NULL
+```
+* Correlation on categorical data  
+As we have categorical data so we cannot perform the same correlation data as the one with discrete data, so we use a chi square test and look at the p-value, if it is smaller than 0.05  the significance level then we reject the null hypothesis so both variables have a dependency.  
+```{r}
+chisq.test(table(job_post_clean$fraudulent, job_post_clean$has_company_logo),
+           correct = FALSE)
+print(chisq.test(job_post_clean$fraudulent, job_post_clean$required_experience),
+      correct = FALSE)
+print(chisq.test(job_post_clean$fraudulent, job_post_clean$title),correct = FALSE)
+print(chisq.test(job_post_clean$fraudulent, job_post_clean$region),correct = FALSE)
+print(chisq.test(job_post_clean$fraudulent, job_post_clean$telecommuting),correct = FALSE)
+print(chisq.test(job_post_clean$fraudulent, job_post_clean$has_questions),correct = FALSE)
+print(chisq.test(job_post_clean$fraudulent, job_post_clean$employment_type),correct = FALSE)
+print(chisq.test(job_post_clean$fraudulent, job_post_clean$industry),correct = FALSE)
+print(chisq.test(job_post_clean$fraudulent, job_post_clean$function.),correct = FALSE)
+```
+There are warnings of incorrect approximation in four variables and two of them(title and industry) have actually a very large number of levels and especially for the title as each company decides the title of a job position making it more difficult to reduce the number of levels, those two variables are going to be excluded even though they passed the test.  
+```{r}
+#Dropping title and industry from the dataframe. 
+job_post_clean$title<-NULL
+job_post_clean$industry<-NULL
+head(job_post_clean)
+```
+* MCA Analysis   
+As all the our data is categorical, instead of performing a PCA analysis the approach is going to be to perform a MCA analysis. As we can see in our plot, our first three variables are have a low variance percentage, all of them below 4% but we are going to keep them based on the results from the chi-square. Also, the plot selected is very simple,there are others like the biplot with a more intuitive representation but as we have around 62 different levels the plots look messy and difficult to read.  
+```{r}
+#MCA only accepts factors so first we have to change our variables to factors. 
+job_post_factorized<-job_post_clean
+job_post_factorized[]<-lapply(job_post_factorized, factor)
+jobs_MCA <- MCA(job_post_factorized, graph = FALSE)
+#Plot variances per each dimension 
+fviz_eig(jobs_MCA,addlabels = TRUE, main = "MCA Visualization")
+#A summary of the MCA  analysis. 
+summary(jobs_MCA)
+```
+Even though our variables are represented as factors, those still are string values so the next step is to create dummy codes for the features that still have string values.  
+```{r}
+job_post_factorized$fraudulent <- factor(job_post_factorized$fraudulent,
+                                         levels = c("0", "1"), labels =
+                                           c("Legit", "Fraudulent"))
+#job_post_clean$fraudulent<-as.factor(job_post_clean$fraudulent)
+job_post_factorized <- dummy_cols(job_post_factorized, select_columns = 
+                                    c('employment_type', 'required_experience','function.','region'))
+#Clean old features with string values 
+job_post_factorized[ ,c('employment_type', 'required_experience',
+                        'function.','region')] <- list(NULL)
+```
+## Modeling  
+In the initial proposal of this project, I selected logistic regression, Naive Bayes, and neural networks to perform the classification since I skimmed the data but my analysis was not deep enough enough to realize that all data is categorical while first I though I had a couple of numerical values(salary range was  my candidate to become numerica but it also had too many missing values) so instead I am going to use Naive Bayes, random forest and kNN since those can deal better with categorical data and to perform the classification.  
+The first step is to divide our dataset and create a dataset for training and another one for testing. Our  training dataset is going to have the 75% of the whole dataset, and the test dataset is going to have the 25%.  
+```{r}
+set.seed(4567)
+#Get indexes to divide the dataset
+trainIndex <- sample(3, nrow(job_post_factorized), replace=TRUE, prob=c(0.70, 0.15,0.15))
+#Created training dataset
+job_trainDF <- job_post_factorized[trainIndex==1,]
+dim(job_trainDF)
+#created validation dataset
+job_ValDF <- job_post_factorized[trainIndex==2,]
+#Created testing dataset 
+job_testDF <- job_post_factorized[trainIndex==3,]
+```
+The following function is going to help us to create a confussion matrix and calculate the accuracy for any model  
+```{r}
+#Dataframe to store accuracy and ACU values for each model
+modelEvaluation <- data.frame(matrix(ncol = 3, nrow = 0))
+x <- c("model", "accuracy", "AUC")
+colnames(modelEvaluation) <- x
+testModel=function(modelToTest,testDataSet,outcome,modelname){
+  testPredict=predict(modelToTest, testDataSet)
+  roc_pred <- prediction(predictions = as.numeric(testPredict)  , 
+                         labels = as.numeric(outcome))
+  auc_ROCR <- performance(roc_pred, measure = "auc")
+  testResult=table(outcome, testPredict)
+  accuracy=(testResult[1,1]+testResult[2,2])/sum(testResult)
+  message("Confusion Matrix:")
+  print(testResult)
+  message("Accuracy:")
+  print(accuracy)
+  return(c(modelname, accuracy, auc_ROCR@y.values[[1]]))
+}
+```
+As all our data is categorical and the taks to perform is a classification, naive Bayes is one of the most suitable models to work with.  
+```{r}
+JobsNBclassifier=naiveBayes(fraudulent~., data=job_trainDF,laplace=1)
+result<- testModel(JobsNBclassifier,job_testDF,job_testDF$fraudulent,"Naive Bayes")
+modelEvaluation<-rbind(modelEvaluation,result)
+```
+Random Forest is another algorithm that works well with categorical data and for classification  
+```{r}
+jobs_randomForest <- randomForest(fraudulent ~.,data=job_trainDF)
+print(jobs_randomForest)
+result<-testModel(jobs_randomForest,job_testDF,job_testDF$fraudulent,"RandomForest")
+modelEvaluation<-rbind(modelEvaluation,result)
+```
+kNN is also another algorithm that works well for classification, we only have to consider that if we have too many features the performance can fall a lot but as we only 61 features we can still use it., also usually the k value is assigned as the square root of the length of the sample, in our case 116 is the square root of the 13491 observations, with a large k value our algorithm takes hours for training so let's start with k=3  
+```{r}
+jobs_kNN <- knn(job_trainDF[,-4], job_testDF[,-4],cl = job_trainDF$fraudulent, k=3,l=0)
+#Calculate the confusion matrix
+cfM <- table(jobs_kNN,job_testDF$fraudulent)
+accuracy <- function(x){
+  acc<-sum(diag(x)/(sum(rowSums(x)))) * 100
+  message("Confusion Matrix:")  
+  print(x)
+  message("Accuracy:")
+  print(acc)
+  return(acc)
+}
+#Print accuracy and confusion matrix 
+ac<-accuracy(cfM)
+roc_pred <- prediction(predictions = as.numeric(jobs_kNN)  , 
+                       labels = as.numeric(job_testDF$fraudulent))
+auc_ROCR <- performance(roc_pred, measure = "auc")
+modelEvaluation<-rbind(modelEvaluation,c("kNN",ac/100,auc_ROCR@y.values[[1]]))
+```
+* k-Folding   
+Let's see if there is any difference by using k-folding, for the first implementation on Naive Bayes, it was necessary to exclude the other variables as while dividing in each k section some levels were not present and the algorithm added a zero frequency eventually and eventually failing due to low variance.  
+```{r}
+#control setup to use ROC by using classProbs=TRUE 
+tControl<-trainControl(method='cv',number=5,classProbs = TRUE)
+
+kfolding_NBmodel <- train(fraudulent~telecommuting+has_company_logo+has_questions
+                          ,job_trainDF,method="nb",
+                          metric="Accuracy",
+                          trControl=tControl)
+kfolding_NBmodel
+predict_NBmodel<-predict(kfolding_NBmodel,job_testDF[,-4])
+cfMNB<-confusionMatrix( predict_NBmodel,job_testDF$fraudulent)
+cfMNB
+roc_pred <- prediction(predictions = as.numeric(predict_NBmodel)  , 
+                       labels = as.numeric(job_testDF$fraudulent))
+auc_ROCR <- performance(roc_pred, measure = "auc")
+modelEvaluation<-rbind(modelEvaluation,
+                       c("NB k-Fold",as.numeric(cfMNB$overall[1]),
+                         auc_ROCR@y.values[[1]]))
+```
+The following implementation of k-folding shares the same control values as the previous algorithm, this model has the highest kappa value from the three implementations using k-fold technique.      
+```{r}
+kfolding_RFmodel <- train(fraudulent~., data=job_trainDF, 
+                      method='rf', 
+                      metric='Accuracy', 
+                      trControl=tControl)
+
+predict_RFmodel<-predict(kfolding_RFmodel,job_testDF[,-4])
+cfMRF<-confusionMatrix( predict_RFmodel,job_testDF$fraudulent)
+cfMRF
+roc_pred <- prediction(predictions = as.numeric(predict_RFmodel)  , 
+                       labels = as.numeric(job_testDF$fraudulent))
+auc_ROCR <- performance(roc_pred, measure = "auc")
+modelEvaluation<-rbind(modelEvaluation,
+                       c("RF k-Fold",cfMRF$overall[1],auc_ROCR@y.values[[1]]))
+```
+Implementing k-folding in the kNNmodel,using all the predictors from the dataframe there is plot to show how the accuracy falls with a larger number of neighbors.      
+```{r}
+kfolding_kNNmodel <- train(fraudulent ~ .,method     = "knn",trControl  = tControl,
+             metric     = "Accuracy",data = job_trainDF)
+predict_kNNmodel<-predict(kfolding_kNNmodel,job_testDF[,-4])
+cfMknn<-confusionMatrix( predict_kNNmodel,job_testDF$fraudulent)
+cfMknn
+roc_pred <- prediction(predictions = as.numeric(predict_kNNmodel)  , 
+                       labels = as.numeric(job_testDF$fraudulent))
+auc_ROCR <- performance(roc_pred, measure = "auc")
+modelEvaluation<-rbind(modelEvaluation,
+                       c("kNN k-Fold",cfMknn$overall[1],auc_ROCR@y.values[[1]]))
+#The following plot is to check which k-value is the best for the model 
+plot(kfolding_kNNmodel)
+```
+* Bagging    
+The following example is going to use bagging on naive bayes and knn, as we are already using a random forest, let's compare the bagging from those two models and find that while their accuracies are similar, the confusion matrix show us how poorly is performing Naive Bayes even its kappa value is 0 which indicates that this model implementation is not good for the task.  
+```{r}
+set.seed(4040)
+ctrl <- trainControl(
+  method = "boot",
+  number = 3,
+  savePredictions = "final",
+  classProbs = TRUE,
+  index = createResample(job_trainDF$fraudulent, 10),
+  summaryFunction = twoClassSummary
+)
+metric <- "ROC"
+
+set.seed(4040)
+nbbagging <- train(fraudulent ~ telecommuting+has_company_logo+has_questions, 
+                    data = job_trainDF, 
+                    method = "nb", metric = metric, trControl = ctrl)
+
+predictNBBagging = predict(nbbagging,job_testDF[,-4] )
+cfMNBBag<-confusionMatrix( predictNBBagging,job_testDF$fraudulent)
+#Displaying the  full confusion matrix for Naive Bayes
+cfMNBBag
+roc_pred <- prediction(predictions = as.numeric(predictNBBagging)  , 
+                       labels = as.numeric(job_testDF$fraudulent))
+auc_ROCR <- performance(roc_pred, measure = "auc")
+modelEvaluation<-rbind(modelEvaluation,
+                       c("NB Bagging",cfMNBBag$overall[1],auc_ROCR@y.values[[1]]))
+#Implemeting bagging for kNN
+set.seed(4040)
+knnbagging <- train(fraudulent ~ .,
+  data = job_trainDF,
+  method = "knn", trControl = ctrl)
+predictkNNBagging = predict(knnbagging,job_testDF[,-4] )
+cfMknnBag<-confusionMatrix( predictkNNBagging,job_testDF$fraudulent)
+#Display the confusion matrix for kNN
+cfMknnBag
+roc_pred <- prediction(predictions = as.numeric(predictkNNBagging)  , 
+                       labels = as.numeric(job_testDF$fraudulent))
+auc_ROCR <- performance(roc_pred, measure = "auc")
+modelEvaluation<-rbind(modelEvaluation,
+                       c("kNN Bagging",cfMknnBag$overall[1],auc_ROCR@y.values[[1]]))
+#As we  are using kNN again, this time we plot and compare how the ROC  with the
+#quantity of neighbors 
+plot(knnbagging)
+```
+Creating function of an ensemble model, compared with bagging here we are going to combine three models and get the prediction using a weighted average, Random Forest is going to have the largest value as among the three models it is considered the best for the classification with all categorical features.  
+```{r}
+ensemble_model=function(training,testing){
+stack_control <- trainControl(
+  method="boot",
+  number=10,
+  savePredictions="final",
+  classProbs=TRUE
+  )
+knn_control <- trainControl(
+  method='boot',
+  number=3,
+  classProbs = TRUE)
+outcome<-'fraudulent'
+#Training the models 
+nbEnsemble <- train(fraudulent ~ telecommuting+has_company_logo+has_questions,
+                    method = "nb",
+                     trControl  = stack_control,metric = "Accuracy",data = training)
+
+rfEnsemble <- train(fraudulent ~ telecommuting+has_company_logo+has_questions,
+                    method = "rf",
+                     trControl  = stack_control,metric = "Accuracy",data = training)
+
+kNNEnsemble <- train(fraudulent ~ .,method = "knn",
+                     trControl  = knn_control,metric = "Accuracy",data = training)
+
+#Getting the predictions
+testing$pred_nb_prob<-predict(object = nbEnsemble,testing[,1:3],type='prob')$Legit
+testing$pred_rf_prob<-predict(object = rfEnsemble,testing[,1:3],type='prob')$Legit
+testing$pred_knn_prob<-predict(object = kNNEnsemble,testing[,-4],type='prob')$Legit
+#our approach is going to be to use a weighted average 
+testing$pred_weighted_avg<-(testing$pred_nb_prob*0.01)+
+  (testing$pred_knn_prob*0.49)+(testing$pred_rf_prob*0.5)
+
+#Converting into binary classes at 0.5
+testing$pred_weighted_avg<-as.factor(ifelse(testing$pred_weighted_avg>0.5,'Legit',
+                                            'Fraudulent'))
+return(testing$pred_weighted)
+}
+#Getting predictions
+ensemble_pred<-ensemble_model(job_trainDF,job_testDF)
+#Evaluating the model
+cfEn <- table(ensemble_pred,job_testDF$fraudulent)
+acc<-accuracy(cfEn)
+roc_pred <- prediction(predictions = as.numeric(ensemble_pred)  , 
+                       labels = as.numeric(job_testDF$fraudulent))
+auc_ROCR <- performance(roc_pred, measure = "auc")
+modelEvaluation<-rbind(modelEvaluation,c("Ensemble",acc/100,auc_ROCR@y.values[[1]]))
+```
+## Evaluation  
+As we calculated all the accuracies and AUC values per each, now it is time to evaluate each model. The accuracy is not a recommended statistic to evaluate a classification with categorical data but I am using in the project to explain how misleading it could be and use instead the AUC value to define which model is better.     
+```{r}
+#Adding column names to make it easier handling data
+x <- c("model", "acc", "AUC")
+colnames(modelEvaluation) <- x
+#Plot accuracy per each model
+ggplot(modelEvaluation, aes(x=model, y=acc)) +
+  geom_point( size=5, color="blue", fill=alpha("purple", 0.3), 
+              alpha=0.7, shape=21, stroke=2) +
+  theme_light()+
+  theme(axis.text.x = element_text(angle = 90),
+        plot.title = element_text(hjust = 0.5))+
+  xlab("Model name")+
+  ylab("Accuracy of the model")+
+  ggtitle("Accuracy of each model")
+#Plot  AUC value per each model 
+ggplot(modelEvaluation, aes(x=model, y=AUC)) +
+  geom_point( size=5, color="blue", fill=alpha("purple", 0.3), 
+              alpha=0.7, shape=21, stroke=2) +
+  theme_light()+
+  theme(axis.text.x = element_text(angle = 90),
+        plot.title = element_text(hjust = 0.5))+
+  xlab("Model name")+
+  ylab("Area Under the ROC Curve (AUC)")+
+  ggtitle("Area Under the ROC Curve (AUC) of each model")
+```
+Usually, Naive Bayes is the recommended model to perform classification with categorical data but there is an important thing that we have to consider, and it is that Naive Bayes is going to always assume that predictors are independent but performing the chi-square test showed us that all our predictors are not independent. The first implementation of Naive Bayes has an extremely low accuracy of around 15%, using k-folding it increases to around 95% which can make us think that implementation is actually the best one but if we check the AUC values we can observe how similar they are and both are around 0.5 which show us that Naive Bayes is obtaining the results by random guessing; we can verify in the confusion matrix generated after each model training.    
+All predictions classify the test dataset observations as Legit and as our classes are imbalanced the accuracy is still a high value that doesn't represent the real performance of the model, also Naive Bayes with k-folding had problems using all the predictors initially selected.   
+kNN is the model that presented more consistency in performance,its AUC values are among the highest, showing more problems in the implementation of bagging since had problems with high k values;it found low variance among the predictors which was a problem for kNN so it required a different train control configuration for bagging and the ensemble example.    
+Random Forest was the other algorithm selected, the first implementation without k-folding performs better, with the highest AUC value of all the models, it also didn't present any problem while training, as this an actual implementation of bagging it doesn't have an implementation on the section of bagging algorithms. 
+It is important to consider all those aspects since the assemble model which was supposed to take advantage of the random forest and perform better predictions failed and it is because it includes the Naive Bayes as one of the algorithms of the ensemble. Using a weighted average was not enough since the Naive Bayes had a terrible performance for observations classified as fraudulent.   
+The conclusion from this comparison is that reputation could be misleading if we don't consider the assumptions and how each model actually makes a prediction. Naive Bayes has a lot of reputation for working well with categorical data but the random forest had superior performance, this dataset is usually found in NLP exercises and after this project, I can realize why this approach is preferred.   
+I  think the most important things that we have to consider to use this dataset without performing NLP are:
+* This dataset contains a lot of text and categorical data, so to use all variables that do not contain paragraphs we still have to consider doing some feature engineering to reduce the number of levels of categorical data and also consider removing special characters.  
+* There are a lot of missing values which reduces the options to select predictors and while some missing values can be imputed using more complex techniques like a regression it is going to affect the dependency of the predictors(which are already very dependent) and reduce our options to choose the right model, also the distribution of the number of observations per outcome class is imbalanced and left us with the extra task of trying to balance our dataset.     
+Overall, this project may not have the best predictions or the best model implementations for this dataset but it was a good exercise to understand the impact of the constraints of a model and the impact of a bad selection when combined with algorithms that perform better separately.  
+
+## Deployment  
+At the end of the semester this code is going to be available in Github updated with  the observations generated by the final revision.    
+
+### References:
+Sites consulted to develop the project:  
+http://www.sthda.com/english/articles/31-principal-component-methods-in-r-practical-guide/114-mca-multiple-correspondence-analysis-in-r-essentials/  
+https://rpubs.com/franzbischoff/ensemble
+https://www.r-graph-gallery.com/lollipop-plot.html
+
+
+
